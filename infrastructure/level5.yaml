@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Claude chatbot - Level 5 (tool-calling agent with approval)
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 25            # keep below the ~30 s API Gateway integration limit
+    MemorySize: 512
+    Architectures: [arm64]
+    Tracing: Active
+
+Parameters:
+  AnthropicSecretArn:
+    Type: String
+    Description: 'ARN of the Secrets Manager secret holding a JSON object with key api_key' 
+  ClaudeModel:
+    Type: String
+    Description: A currently supported Anthropic model ID (check the Anthropic docs)
+  AllowedOrigin:
+    Type: String
+    Default: http://localhost:8080
+    Description: Exact origin of the website (scheme + host, no trailing slash)
+  CognitoDomainPrefix:
+    Type: String
+    Description: Globally unique prefix for the Cognito Hosted UI domain
+  CallbackUrl:
+    Type: String
+    Default: http://localhost:8080/
+    Description: Where Cognito redirects after login (must match the site URL exactly)
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true        # invite-only; users cannot self-register
+      Policies:
+        PasswordPolicy: {MinimumLength: 12, RequireLowercase: true, RequireUppercase: true, RequireNumbers: true, RequireSymbols: false}
+      Schema:
+        - Name: tenant_id
+          AttributeDataType: String
+          Mutable: true
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref UserPool
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs: [!Ref CallbackUrl]
+      LogoutURLs: [!Ref CallbackUrl]
+      ReadAttributes: [email, custom:tenant_id]
+      WriteAttributes: [email]                # users can never set their own tenant
+
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: [!Ref AllowedOrigin]
+        AllowHeaders: [content-type, authorization, idempotency-key]
+        AllowMethods: [GET, POST, DELETE, OPTIONS]
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+      Auth:
+        DefaultAuthorizer: Jwt
+        Authorizers:
+          Jwt:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
+              audience: [!Ref UserPoolClient]
+
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: customer_id, AttributeType: S}
+        - {AttributeName: order_id, AttributeType: S}
+      KeySchema:
+        - {AttributeName: customer_id, KeyType: HASH}
+        - {AttributeName: order_id, KeyType: RANGE}
+      SSESpecification: {SSEEnabled: true}
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+
+  AgentTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: pk, AttributeType: S}
+        - {AttributeName: sk, AttributeType: S}
+      KeySchema:
+        - {AttributeName: pk, KeyType: HASH}
+        - {AttributeName: sk, KeyType: RANGE}
+      SSESpecification: {SSEEnabled: true}
+      PointInTimeRecoverySpecification: {PointInTimeRecoveryEnabled: true}
+      TimeToLiveSpecification: {AttributeName: expires, Enabled: true}
+
+  AgentFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: level5_agent.handler.lambda_handler
+      Environment:
+        Variables:
+          ANTHROPIC_SECRET_ARN: !Ref AnthropicSecretArn
+          CLAUDE_MODEL: !Ref ClaudeModel
+          LOG_LEVEL: INFO
+          ORDERS_TABLE: !Ref OrdersTable
+          AGENT_TABLE: !Ref AgentTable
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref AnthropicSecretArn
+        - DynamoDBCrudPolicy: {TableName: !Ref OrdersTable}
+        - DynamoDBCrudPolicy: {TableName: !Ref AgentTable}
+      Events:
+        Agent:
+          Type: HttpApi
+          Properties: {ApiId: !Ref Api, Path: "/agent", Method: POST}
+        Approve:
+          Type: HttpApi
+          Properties: {ApiId: !Ref Api, Path: "/agent/approve", Method: POST}
+
+Outputs:
+  ApiUrl:
+    Value: !Sub https://${Api}.execute-api.${AWS::Region}.amazonaws.com
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  CognitoDomain:
+    Value: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+  OrdersTable:
+    Value: !Ref OrdersTable

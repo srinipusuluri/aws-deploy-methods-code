@@ -1,0 +1,68 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Claude chatbot - Level 1 (basic Q&A) / Level 2 (multi-turn)
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 25            # keep below the ~30 s API Gateway integration limit
+    MemorySize: 512
+    Architectures: [arm64]
+    Tracing: Active
+
+Parameters:
+  AnthropicSecretArn:
+    Type: String
+    Description: 'ARN of the Secrets Manager secret holding a JSON object with key api_key' 
+  ClaudeModel:
+    Type: String
+    Description: A currently supported Anthropic model ID (check the Anthropic docs)
+  AllowedOrigin:
+    Type: String
+    Default: http://localhost:8080
+    Description: Exact origin of the website (scheme + host, no trailing slash)
+
+  Level:
+    Type: String
+    Default: '1'
+    AllowedValues: ['1', '2']
+    Description: 1 = single question, 2 = multi-turn (history supplied by browser)
+
+Conditions:
+  IsLevel2: !Equals [!Ref Level, '2']
+
+Resources:
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: [!Ref AllowedOrigin]
+        AllowHeaders: [content-type, authorization, idempotency-key]
+        AllowMethods: [GET, POST, DELETE, OPTIONS]
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+
+  ChatFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: !If [IsLevel2, level2_conversation.handler.lambda_handler, level1_basic.handler.lambda_handler]
+      Environment:
+        Variables:
+          ANTHROPIC_SECRET_ARN: !Ref AnthropicSecretArn
+          CLAUDE_MODEL: !Ref ClaudeModel
+          LOG_LEVEL: INFO
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref AnthropicSecretArn
+      Events:
+        Chat:
+          Type: HttpApi
+          Properties: {ApiId: !Ref Api, Path: "/chat", Method: POST}
+
+Outputs:
+  ApiUrl:
+    Value: !Sub https://${Api}.execute-api.${AWS::Region}.amazonaws.com
