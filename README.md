@@ -43,7 +43,7 @@ scripts/deploy.sh 1-2 chatbot-l1 \
   AllowedOrigin=https://<site-domain> Level=1
 ```
 
-Then open the guide: **[live page](https://srinipusuluri.github.io/aws-deploy-methods-code/)** (GitHub Pages, served from `docs/`) or `docs/deployment-guide.html` locally. Every level has its deploy command and its manual steps, each with a prompt you can give to Claude in Chrome and the result to expect.
+Then open the guide: **[live page](https://srinipusuluri.github.io/aws-deploy-methods-code/)** (GitHub Pages, served from `docs/`) or `docs/deployment-guide.html` locally. See the **[architecture diagram](https://claude.ai/artifact/PRyHLrGGeWCy4wZZvmj2xu)** for how the levels fit together. Every level has its deploy command and its manual steps, each with a prompt you can give to Claude in Chrome and the result to expect.
 
 ## Design decisions
 
